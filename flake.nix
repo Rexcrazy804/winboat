@@ -12,6 +12,7 @@
     self' = self.packages.${system};
   in {
     packages.${system} = {
+      winboat-guest-server = pkgs.callPackage ./nix/guest.nix {inherit (self') winboat;};
       winboat = pkgs.callPackage ./nix/package.nix {};
       default = self'.winboat;
     };
