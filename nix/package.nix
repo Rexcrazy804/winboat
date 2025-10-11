@@ -1,25 +1,86 @@
 {
-  stdenv,
   lib,
-  fetchurl,
-  makeWrapper,
+  fetchFromGitHub,
   electron,
-  autoPatchelfHook,
-  wrapGAppsHook3,
+  nodejs_24,
+  buildNpmPackage,
+  makeWrapper,
   makeDesktopItem,
-  usbutils,
   copyDesktopItems,
-  asar,
-  libusb1,
+  usbutils,
+  udev,
+  winboat-guest-server,
+  zip,
 }:
-stdenv.mkDerivation (final: {
+buildNpmPackage (final: {
   pname = "winboat";
   version = "0.8.7";
 
-  src = fetchurl {
-    url = "https://github.com/TibixDev/winboat/releases/download/v${final.version}/winboat-${final.version}-x64.tar.gz";
-    sha256 = "sha256-4NV9nyFLYJt9tz3ikDTb1oSpJGAKr1I49D0VHqpty3I=";
+  src = fetchFromGitHub {
+    owner = "TibixDev";
+    repo = "winboat";
+    tag = "v${final.version}";
+    hash = "sha256-30WzvdY8Zn4CAj76bbC0bevuTeOSfDo40FPWof/39Es=";
   };
+
+  postPatch = ''
+    substituteInPlace package.json \
+      --replace-fail "main/main.js" "src/main/main.ts"
+
+    substituteInPlace electron-builder.json \
+      --replace-fail '["appimage", "deb", "rpm", "tar.gz"]' '["tar.gz"]'
+  '';
+
+  nativeBuildInputs = [
+    makeWrapper
+    copyDesktopItems
+    zip
+  ];
+
+  buildInputs = [udev];
+
+  env.ELECTRON_SKIP_BINARY_DOWNLOAD = 1;
+  npmDepsHash = "sha256-nW+cGX4Y0Ndn1ubo4U3n8ZrjM5NkxIt4epB0AghPrNQ=";
+  nodejs = nodejs_24;
+  makeCacheWritable = true;
+
+  buildPhase = ''
+    node scripts/build.ts
+
+    npm exec electron-builder --linux -- \
+      --dir \
+      -c.electronDist=${electron.dist} \
+      -c.electronVersion=${electron.version} \
+      -c.npmRebuild=false
+  '';
+
+  installPhase = ''
+    runHook preInstall
+
+    # install built artifacts
+    mkdir -p $out/bin $out/share/winboat
+    cp -r dist/linux-unpacked/* $out/share/winboat
+
+    # install the icon
+    mkdir -p $out/share/icons/hicolor/256x256/apps
+    cp icons/icon.png $out/share/icons/hicolor/256x256/apps/winboat.png
+
+    # copy the the winboat-guest-server executable and zip it
+    cp -r ${winboat-guest-server}/* $out/share/winboat/resources/guest_server/
+    (cd $out/share/winboat/resources/guest_server/ && zip -r winboat_guest_server.zip .)
+
+    # needed for some reason
+    cp -r dist/linux-unpacked/resources/data $out/share/winboat/data
+    cp -r $out/share/winboat/resources/guest_server $out/share/winboat/guest_server
+
+    # wrap wrap wrap
+    makeWrapper ${electron}/bin/electron $out/bin/winboat \
+      --add-flag "$out/share/winboat/resources/app.asar" \
+      --suffix PATH : "${usbutils}/bin" \
+      ''${gappsWrapperArgs[@]}
+
+    runHook postInstall
+  '';
 
   desktopItems = [
     (makeDesktopItem {
@@ -32,53 +93,6 @@ stdenv.mkDerivation (final: {
       categories = ["Utility"];
     })
   ];
-
-  nativeBuildInputs = [
-    makeWrapper
-    wrapGAppsHook3
-    copyDesktopItems
-    autoPatchelfHook
-    asar
-  ];
-
-  buildInputs = [libusb1 usbutils];
-
-  dontBuild = true;
-  dontWrapGApps = true;
-  autoPatchelfIgnoreMissingDeps = ["libc.musl-x86_64.so.1"];
-
-  installPhase = ''
-    runHook preInstall
-
-    mkdir -p $out/bin $out/share/winboat
-    cp -r ./* $out/share/winboat
-    rm $out/share/winboat/{*.so*,winboat,chrome_crashpad_handler,chrome-sandbox}
-
-    mkdir -p $out/share/icons/hicolor/256x256/apps
-    cp ${../icons/icon.png} $out/share/icons/hicolor/256x256/apps/winboat.png
-
-    mkdir -p $out/share/winboat/data
-    cp resources/data/usb.ids $out/share/winboat/data/usb.ids
-
-    mkdir -p $out/lib
-    cp -r resources/guest_server $out/lib/guest_server
-    cp -r resources/guest_server $out/share/winboat/guest_server
-
-    # Rebuild the ASAR archive to patchelf native module.
-    tmp=$(mktemp -d)
-    asar extract $out/share/winboat/resources/app.asar $tmp
-    rm $out/share/winboat/resources/app.asar
-    autoPatchelf $tmp
-    asar pack $tmp/ $out/share/winboat/resources/app.asar
-    rm -rf $tmp
-
-    makeWrapper ${electron}/bin/electron $out/bin/winboat \
-      --add-flag "$out/share/winboat/resources/app.asar" \
-      --suffix PATH : "${usbutils}/bin" \
-      ''${gappsWrapperArgs[@]}
-
-    runHook postInstall
-  '';
 
   meta = {
     mainProgram = "winboat";
